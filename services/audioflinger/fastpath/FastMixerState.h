@@ -80,6 +80,7 @@ struct FastMixerState : FastThreadState {
     unsigned    mTrackMask = 0;     // bit i is set if and only if mFastTracks[i] is active
     NBAIO_Sink* mOutputSink = nullptr; // HAL output device, must already be negotiated
     int         mOutputSinkGen = 0; // increment when mOutputSink is assigned
+    float       mNormalVolumeReference = 1.0f;
     size_t      mFrameCount = 0;    // number of frames per fast mix buffer
     audio_channel_mask_t mSinkChannelMask; // If not AUDIO_CHANNEL_NONE, specifies sink channel
                                            // mask when it cannot be directly calculated from

@@ -327,6 +327,7 @@ void FastMixer::onWork()
     }
     const FastMixerState::Command command = mCommand;
     const size_t frameCount = current->mFrameCount;
+    float volumeReference = 0.0f;
 
     if ((command & FastMixerState::MIX) && (mMixer != nullptr) && mIsWarm) {
         ALOG_ASSERT(mMixerBuffer != nullptr);
@@ -361,10 +362,12 @@ void FastMixer::onWork()
             fastTrack->mBufferProvider->onTimestamp(perTrackTimestamp);
 
             const int name = i;
+            float trackVolumeReference = current->mNormalVolumeReference;
             if (fastTrack->mVolumeProvider != nullptr) {
                 const gain_minifloat_packed_t vlr = fastTrack->mVolumeProvider->getVolumeLR();
                 float vlf = float_from_gain(gain_minifloat_unpack_left(vlr));
                 float vrf = float_from_gain(gain_minifloat_unpack_right(vlr));
+                trackVolumeReference = std::max(vlf, vrf);
 
                 mMixer->setParameter(name, AudioMixer::RAMP_VOLUME, AudioMixer::VOLUME0, &vlf);
                 mMixer->setParameter(name, AudioMixer::RAMP_VOLUME, AudioMixer::VOLUME1, &vrf);
@@ -396,6 +399,9 @@ void FastMixer::onWork()
                 underruns.mBitFields.mMostRecent = UNDERRUN_FULL;
                 mMixer->enable(name);
                 anyEnabledTracks = true;
+            }
+            if (framesReady > 0) {
+                volumeReference = std::max(volumeReference, trackVolumeReference);
             }
             ftDump->mUnderruns = underruns;
             ftDump->mFramesReady = framesReady;
@@ -452,6 +458,7 @@ void FastMixer::onWork()
         //       but this code should be modified to handle both non-blocking and blocking sinks
         dumpState->mWriteSequence++;
         ATRACE_BEGIN("write");
+        mOutputSink->setVolumeReference(volumeReference);
         const ssize_t framesWritten = mOutputSink->write(buffer, frameCount);
         ATRACE_END();
         dumpState->mWriteSequence++;

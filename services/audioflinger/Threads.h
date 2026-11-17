@@ -1745,6 +1745,7 @@ protected:
             final REQUIRES(mutex(), ThreadBase_ThreadLoop);
 
                 AudioMixer* mAudioMixer;    // normal mixer
+                float mOutputVolumeReference = 1.0f;
 
             // Support low latency mode by default as unless explicitly indicated by the audio HAL
             // we assume the audio path is compatible with the head tracking latency requirements

@@ -18,6 +18,7 @@
 //#define LOG_NDEBUG 0
 
 #include <utils/Log.h>
+#include <media/AudioParameter.h>
 #include <audio_utils/clock.h>
 #include <media/audiohal/StreamHalInterface.h>
 #include <media/nbaio/AudioStreamOutSink.h>
@@ -51,6 +52,15 @@ ssize_t AudioStreamOutSink::negotiate(const NBAIO_Format offers[], size_t numOff
                 audio_channel_count_from_out_mask(config.channel_mask), config.format);
         mFrameSize = Format_frameSize(mFormat);
 
+        String8 response;
+        if (mStream->getParameters(String8("gts9u_speaker_volume_reference"), &response) == OK) {
+            AudioParameter parameters(response);
+            int version = 0;
+            mHasSpeakerVolumeReference =
+                    parameters.getInt(String8("gts9u_speaker_volume_reference"), version) == OK
+                    && version == 1;
+        }
+
         // update format for MEL computation
         auto processor = mMelProcessor.load();
         if (processor) {
@@ -60,6 +70,16 @@ ssize_t AudioStreamOutSink::negotiate(const NBAIO_Format offers[], size_t numOff
         }
     }
     return NBAIO_Sink::negotiate(offers, numOffers, counterOffers, numCounterOffers);
+}
+
+void AudioStreamOutSink::setVolumeReference(float volume)
+{
+    if (!mHasSpeakerVolumeReference || volume == mVolumeReference) return;
+    AudioParameter parameters;
+    parameters.addFloat(String8("gts9u_speaker_mix_volume"), volume);
+    if (mStream->setParameters(parameters.toString()) == OK) {
+        mVolumeReference = volume;
+    }
 }
 
 ssize_t AudioStreamOutSink::write(const void *buffer, size_t count)

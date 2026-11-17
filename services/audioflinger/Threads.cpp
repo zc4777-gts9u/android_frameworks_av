@@ -5459,6 +5459,9 @@ ssize_t MixerThread::threadLoop_write()
             sq->end(false /*didModify*/);
         }
     }
+    if (mNormalSink == mOutputSink) {
+        mOutputSink->setVolumeReference(mOutputVolumeReference);
+    }
     return PlaybackThread::threadLoop_write();
 }
 
@@ -5660,6 +5663,8 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
         masterVolume = (float)((v + (1 << 23)) >> 24);
         chain.clear();
     }
+
+    mOutputVolumeReference = 0.0f;
 
     // prepare a new state to push
     FastMixerStateQueue *sq = NULL;
@@ -6192,6 +6197,8 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
                 track->setHasVolumeController(false);
             }
 
+            mOutputVolumeReference = std::max(mOutputVolumeReference, std::max(vlf, vrf));
+
             // XXX: these things DON'T need to be done each time
             mAudioMixer->setBufferProvider(trackId, track->asExtendedAudioBufferProvider());
             mAudioMixer->enable(trackId);
@@ -6393,6 +6400,11 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
             fastTrack->mHapticPlaybackEnabled = noFastHapticTrack;
             didModify = true;
         }
+    }
+
+    if (state != nullptr && state->mNormalVolumeReference != mOutputVolumeReference) {
+        state->mNormalVolumeReference = mOutputVolumeReference;
+        didModify = true;
     }
 
     // Push the new FastMixer state if necessary

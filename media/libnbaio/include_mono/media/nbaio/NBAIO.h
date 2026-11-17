@@ -222,6 +222,9 @@ public:
     // as of this presentation count.  The timestamp parameter is undefined if error is returned.
     virtual status_t getTimestamp(ExtendedTimestamp& /*timestamp*/) { return INVALID_OPERATION; }
 
+    // Supply the common attenuation of the mix to a capable output processor.
+    virtual void setVolumeReference(float /* volume */) {}
+
 protected:
     NBAIO_Sink(const NBAIO_Format& format = Format_Invalid) : NBAIO_Port(format), mFramesWritten(0)
             { }

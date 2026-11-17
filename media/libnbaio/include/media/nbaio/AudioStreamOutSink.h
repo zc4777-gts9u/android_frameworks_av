@@ -45,6 +45,7 @@ public:
     //virtual size_t underruns() const;
 
     virtual ssize_t write(const void *buffer, size_t count);
+    void setVolumeReference(float volume) override;
 
     virtual status_t getTimestamp(ExtendedTimestamp &timestamp);
 
@@ -60,6 +61,8 @@ public:
 
 private:
     sp<StreamOutHalInterface> mStream;
+    bool mHasSpeakerVolumeReference = false;
+    float mVolumeReference = -1.0f;
     size_t              mStreamBufferSizeBytes; // as reported by get_buffer_size()
     mediautils::atomic_sp<audio_utils::MelProcessor> mMelProcessor;
 };
