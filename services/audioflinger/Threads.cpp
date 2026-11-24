@@ -5681,6 +5681,10 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
     mMixerBufferValid = false;  // mMixerBuffer has no valid data until appropriate tracks found.
     mEffectBufferValid = false; // mEffectBuffer has no valid data until tracks found.
 
+    const bool speakerOutput = mOutDeviceTypeAddrs.size() == 1
+            && mOutDeviceTypeAddrs[0].mType == AUDIO_DEVICE_OUT_SPEAKER;
+    unsigned fadeOutTrackMask = state != nullptr ? state->mFadeOutTrackMask : 0;
+
     // DeferredOperations handles statistics after setting mixerStatus.
     class DeferredOperations {
     public:
@@ -5743,6 +5747,10 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
             ALOG_ASSERT(0 < j && j < (int)FastMixerState::sMaxFastTracks);
             ALOG_ASSERT(!(mFastTrackAvailMask & (1 << j)));
             FastTrack *fastTrack = &state->mFastTracks[j];
+            const unsigned trackBit = 1u << j;
+            const bool fadeSpeakerMedia = speakerOutput && track->sharedBuffer() == nullptr
+                    && track->attributes().usage == AUDIO_USAGE_MEDIA
+                    && (track->channelMask() & AUDIO_CHANNEL_HAPTIC_ALL) == 0;
 
             // Determine whether the track is currently in underrun condition,
             // and whether it had a recent underrun.
@@ -5779,14 +5787,18 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
                 }
                 break;
             case IAfTrackBase::PAUSING:
-                // ramp down is not yet implemented
+                if (fadeSpeakerMedia) {
+                    // Leave the track mixing during the existing pause drain.
+                    fadeOutTrackMask |= trackBit;
+                }
                 track->setPaused();
                 break;
             case IAfTrackBase::RESUMING:
-                // ramp up is not yet implemented
+                fadeOutTrackMask &= ~trackBit;
                 track->setState(IAfTrackBase::ACTIVE);
                 break;
             case IAfTrackBase::ACTIVE:
+                fadeOutTrackMask &= ~trackBit;
                 if (recentFull > 0 || recentPartial > 0) {
                     // track has provided at least some frames recently: reset retry count
                     track->retryCount() = kMaxTrackRetries;
@@ -5851,7 +5863,10 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
 
             if (isActive) {
                 // was it previously inactive?
-                if (!(state->mTrackMask & (1 << j))) {
+                if (!(state->mTrackMask & trackBit)) {
+                    if (fadeSpeakerMedia) {
+                        state->mFadeInTrackMask |= trackBit;
+                    }
                     ExtendedAudioBufferProvider *eabp = track->asExtendedAudioBufferProvider();
                     VolumeProvider *vp = track->asVolumeProvider();
                     fastTrack->mBufferProvider = eabp;
@@ -5865,7 +5880,7 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
                     snprintf(fastTrack->mTraceName, sizeof(fastTrack->mTraceName),
                              "%s%s", AUDIO_TRACE_PREFIX_AUDIO_TRACK_FRDY,
                              track->getTraceSuffix().c_str());
-                    state->mTrackMask |= 1 << j;
+                    state->mTrackMask |= trackBit;
                     didModify = true;
                     // no acknowledgement required for newly active tracks
                 }
@@ -5943,10 +5958,12 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
                 ++fastTracks;
             } else {
                 // was it previously active?
-                if (state->mTrackMask & (1 << j)) {
+                if (state->mTrackMask & trackBit) {
                     fastTrack->mBufferProvider = NULL;
                     fastTrack->mGeneration++;
-                    state->mTrackMask &= ~(1 << j);
+                    state->mTrackMask &= ~trackBit;
+                    state->mFadeInTrackMask &= ~trackBit;
+                    fadeOutTrackMask &= ~trackBit;
                     didModify = true;
                     // If any fast tracks were removed, we must wait for acknowledgement
                     // because we're about to decrement the last sp<> on those tracks.
@@ -6400,6 +6417,11 @@ PlaybackThread::mixer_state MixerThread::prepareTracks_l(
             fastTrack->mHapticPlaybackEnabled = noFastHapticTrack;
             didModify = true;
         }
+    }
+
+    if (state != nullptr && state->mFadeOutTrackMask != fadeOutTrackMask) {
+        state->mFadeOutTrackMask = fadeOutTrackMask;
+        didModify = true;
     }
 
     if (state != nullptr && state->mNormalVolumeReference != mOutputVolumeReference) {

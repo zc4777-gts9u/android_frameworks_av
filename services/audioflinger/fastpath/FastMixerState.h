@@ -78,6 +78,8 @@ struct FastMixerState : FastThreadState {
     int         mFastTracksGen = 0; // increment when any
                                     // mFastTracks[i].mGeneration is incremented
     unsigned    mTrackMask = 0;     // bit i is set if and only if mFastTracks[i] is active
+    unsigned    mFadeInTrackMask = 0;  // start the track at zero when it joins the mixer
+    unsigned    mFadeOutTrackMask = 0; // ramp the track to zero while it drains on pause
     NBAIO_Sink* mOutputSink = nullptr; // HAL output device, must already be negotiated
     int         mOutputSinkGen = 0; // increment when mOutputSink is assigned
     float       mNormalVolumeReference = 1.0f;

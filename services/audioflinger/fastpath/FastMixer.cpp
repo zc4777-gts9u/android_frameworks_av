@@ -143,23 +143,27 @@ void FastMixer::updateMixerTrack(int index, Reason reason) {
                 __func__, index, fastTrack->mChannelMask, fastTrack->mFormat);
     }
         [[fallthrough]];  // now fallthrough to update the newly created track.
-    case REASON_MODIFY:
+    case REASON_MODIFY: {
         mMixer->setBufferProvider(index, fastTrack->mBufferProvider);
 
-        float vlf, vrf;
-        if (fastTrack->mVolumeProvider != nullptr) {
-            const gain_minifloat_packed_t vlr = fastTrack->mVolumeProvider->getVolumeLR();
-            vlf = float_from_gain(gain_minifloat_unpack_left(vlr));
-            vrf = float_from_gain(gain_minifloat_unpack_right(vlr));
-        } else {
-            vlf = vrf = AudioMixer::UNITY_GAIN_FLOAT;
+        const unsigned trackBit = 1u << index;
+        const bool fade = ((current->mFadeInTrackMask | current->mFadeOutTrackMask) & trackBit) != 0;
+        // Preserve the current volume when a fading track is reconfigured.
+        if (reason == REASON_ADD || !fade) {
+            float vlf = 0.f;
+            float vrf = 0.f;
+            if (!fade) {
+                if (fastTrack->mVolumeProvider != nullptr) {
+                    const gain_minifloat_packed_t vlr = fastTrack->mVolumeProvider->getVolumeLR();
+                    vlf = float_from_gain(gain_minifloat_unpack_left(vlr));
+                    vrf = float_from_gain(gain_minifloat_unpack_right(vlr));
+                } else {
+                    vlf = vrf = AudioMixer::UNITY_GAIN_FLOAT;
+                }
+            }
+            mMixer->setParameter(index, AudioMixer::VOLUME, AudioMixer::VOLUME0, &vlf);
+            mMixer->setParameter(index, AudioMixer::VOLUME, AudioMixer::VOLUME1, &vrf);
         }
-
-        // set volume to avoid ramp whenever the track is updated (or created).
-        // Note: this does not distinguish from starting fresh or
-        // resuming from a paused state.
-        mMixer->setParameter(index, AudioMixer::VOLUME, AudioMixer::VOLUME0, &vlf);
-        mMixer->setParameter(index, AudioMixer::VOLUME, AudioMixer::VOLUME1, &vrf);
 
         mMixer->setParameter(index, AudioMixer::RESAMPLE, AudioMixer::REMOVE, nullptr);
         mMixer->setParameter(index, AudioMixer::TRACK, AudioMixer::MAIN_BUFFER,
@@ -181,6 +185,7 @@ void FastMixer::updateMixerTrack(int index, Reason reason) {
 
         mMixer->enable(index);
         break;
+    }
     default:
         LOG_ALWAYS_FATAL("%s: invalid update reason %d", __func__, reason);
     }
@@ -368,6 +373,9 @@ void FastMixer::onWork()
                 float vlf = float_from_gain(gain_minifloat_unpack_left(vlr));
                 float vrf = float_from_gain(gain_minifloat_unpack_right(vlr));
                 trackVolumeReference = std::max(vlf, vrf);
+                if (current->mFadeOutTrackMask & (1u << i)) {
+                    vlf = vrf = 0.f;
+                }
 
                 mMixer->setParameter(name, AudioMixer::RAMP_VOLUME, AudioMixer::VOLUME0, &vlf);
                 mMixer->setParameter(name, AudioMixer::RAMP_VOLUME, AudioMixer::VOLUME1, &vrf);
