@@ -84,6 +84,11 @@ using content::AttributionSourceState;
 // media / notification / system volume.
 constexpr float IN_CALL_EARPIECE_HEADROOM_DB = 3.f;
 
+// Reserve the SM-X910 low-latency speaker stream for media before the vendor Dolby stage.
+static bool isGts9uMediaOutput(const sp<SwAudioOutputDescriptor>& output) {
+    return output->mProfile != nullptr && output->mProfile->getName() == "gts9u media";
+}
+
 
 // ----------------------------------------------------------------------------
 // AudioPolicyInterface implementation
@@ -1352,7 +1357,10 @@ audio_io_handle_t AudioPolicyManager::getOutput(audio_stream_type_t stream)
     if (stream == AUDIO_STREAM_MUSIC && mConfig->useDeepBufferForMedia()) {
         flags = AUDIO_OUTPUT_FLAG_DEEP_BUFFER;
     }
-    const audio_io_handle_t output = selectOutput(outputs, flags);
+    const audio_io_handle_t output = selectOutput(outputs, flags, AUDIO_FORMAT_INVALID,
+            AUDIO_CHANNEL_NONE, 0, AUDIO_SESSION_NONE,
+            mEngine->getAttributesForStreamType(stream).usage,
+            devices.onlyContainsDevicesWithType(AUDIO_DEVICE_OUT_SPEAKER));
 
     ALOGV("getOutput() stream %d selected devices %s, output %d", stream,
           devices.toString().c_str(), output);
@@ -2002,7 +2010,8 @@ audio_io_handle_t AudioPolicyManager::getOutputForDevices(
                 }
             }
             output = selectOutput(
-                    outputs, *flags, config->format, channelMask, config->sample_rate, session);
+                    outputs, *flags, config->format, channelMask, config->sample_rate, session,
+                    attr->usage, devices.onlyContainsDevicesWithType(AUDIO_DEVICE_OUT_SPEAKER));
         }
     }
     ALOGW_IF((output == 0), "getOutputForDevices() could not find output for stream %d, "
@@ -2312,7 +2321,8 @@ audio_io_handle_t AudioPolicyManager::selectOutput(const std::set<audio_io_handl
                                                    audio_format_t format,
                                                    audio_channel_mask_t channelMask,
                                                    uint32_t samplingRate,
-                                                   audio_session_t sessionId)
+                                                   audio_session_t sessionId,
+                                                   audio_usage_t usage, bool speakerOnly)
 {
     LOG_ALWAYS_FATAL_IF(!(format == AUDIO_FORMAT_INVALID || audio_is_linear_pcm(format)),
         "%s called with format %#x", __func__, format);
@@ -2323,7 +2333,8 @@ audio_io_handle_t AudioPolicyManager::selectOutput(const std::set<audio_io_handl
     if (sessionId != AUDIO_SESSION_NONE) {
         audio_io_handle_t hapticGeneratingOutput = mEffects.getIoForSession(
                 sessionId, FX_IID_HAPTICGENERATOR);
-        if (outputs.count(hapticGeneratingOutput) > 0) {
+        if (outputs.count(hapticGeneratingOutput) > 0
+                && !isGts9uMediaOutput(mOutputs.valueFor(hapticGeneratingOutput))) {
             return hapticGeneratingOutput;
         }
     }
@@ -2349,7 +2360,7 @@ audio_io_handle_t AudioPolicyManager::selectOutput(const std::set<audio_io_handl
     const audio_output_flags_t performanceFlags =
         (audio_output_flags_t)(flags & kPerformanceFlags);
 
-    audio_io_handle_t bestOutput = outputs.empty() ? AUDIO_IO_HANDLE_NONE : *outputs.begin();
+    audio_io_handle_t bestOutput = AUDIO_IO_HANDLE_NONE;
 
     // select one output among several that provide a path to a particular device or set of
     // devices (the list was previously build by getOutputsForDevices()).
@@ -2375,8 +2386,17 @@ audio_io_handle_t AudioPolicyManager::selectOutput(const std::set<audio_io_handl
     const uint32_t hapticChannelCount = audio_channel_count_from_out_mask(
         channelMask & AUDIO_CHANNEL_HAPTIC_ALL);
 
+    constexpr auto kGts9uMediaFlags = AUDIO_OUTPUT_FLAG_FAST | AUDIO_OUTPUT_FLAG_DEEP_BUFFER;
+    const bool allowGts9uMedia = speakerOnly && usage == AUDIO_USAGE_MEDIA
+            && hapticChannelCount == 0 && !hasOrphanHaptic && (flags & ~kGts9uMediaFlags) == 0;
     for (audio_io_handle_t output : outputs) {
         sp<SwAudioOutputDescriptor> outputDesc = mOutputs.valueFor(output);
+        if (isGts9uMediaOutput(outputDesc)) {
+            if (allowGts9uMedia) return output;
+            continue;
+        }
+        if (bestOutput == AUDIO_IO_HANDLE_NONE) bestOutput = output;
+
         // matching criteria values in priority order for current output
         std::vector<uint32_t> currentMatchCriteria(8, 0);
 
@@ -4217,6 +4237,7 @@ audio_io_handle_t AudioPolicyManager::selectOutputForMusicEffects()
     while (output == AUDIO_IO_HANDLE_NONE) {
         audio_io_handle_t outputOffloaded = AUDIO_IO_HANDLE_NONE;
         audio_io_handle_t outputSpatializer = AUDIO_IO_HANDLE_NONE;
+        audio_io_handle_t outputSpeakerMedia = AUDIO_IO_HANDLE_NONE;
         audio_io_handle_t outputDeepBuffer = AUDIO_IO_HANDLE_NONE;
         audio_io_handle_t outputPrimary = AUDIO_IO_HANDLE_NONE;
 
@@ -4235,6 +4256,10 @@ audio_io_handle_t AudioPolicyManager::selectOutputForMusicEffects()
                     outputSpatializer = outputLoop;
                 }
             }
+            if (isGts9uMediaOutput(desc)
+                    && devices.onlyContainsDevicesWithType(AUDIO_DEVICE_OUT_SPEAKER)) {
+                outputSpeakerMedia = outputLoop;
+            }
             if ((desc->mFlags & AUDIO_OUTPUT_FLAG_DEEP_BUFFER) != 0) {
                 outputDeepBuffer = outputLoop;
             }
@@ -4246,6 +4271,8 @@ audio_io_handle_t AudioPolicyManager::selectOutputForMusicEffects()
             output = outputOffloaded;
         } else if (outputSpatializer != AUDIO_IO_HANDLE_NONE) {
             output = outputSpatializer;
+        } else if (outputSpeakerMedia != AUDIO_IO_HANDLE_NONE) {
+            output = outputSpeakerMedia;
         } else if (outputDeepBuffer != AUDIO_IO_HANDLE_NONE) {
             output = outputDeepBuffer;
         } else if (outputPrimary != AUDIO_IO_HANDLE_NONE) {
@@ -4488,7 +4515,8 @@ status_t AudioPolicyManager::registerPolicyMixes(const std::vector<AudioMix>& mi
             for (size_t j = 0 ; j < mOutputs.size() && !foundOutput && res == NO_ERROR; j++) {
                 sp<SwAudioOutputDescriptor> desc = mOutputs.valueAt(j);
 
-                if (!desc->isDuplicated() && desc->supportedDevices().contains(device)) {
+                if (!desc->isDuplicated() && !isGts9uMediaOutput(desc)
+                        && desc->supportedDevices().contains(device)) {
                     if (mPolicyMixes.registerMix(mix, desc) != NO_ERROR) {
                         ALOGE("Could not register mix RENDER,  dev=0x%X addr=%s", type,
                               address.c_str());
@@ -8064,6 +8092,7 @@ void AudioPolicyManager::checkOutputForStrategy(const product_strategy_t psId)
     }
 
     if (srcOutputs != dstOutputs || !invalidatedOutputs.empty()) {
+        const bool speakerOnly = newDevices.onlyContainsDevicesWithType(AUDIO_DEVICE_OUT_SPEAKER);
         // get maximum latency of all source outputs to determine the minimum mute time guaranteeing
         // audio from invalidated tracks will be rendered when unmuting
         for (audio_io_handle_t srcOut : srcOutputs) {
@@ -8085,12 +8114,10 @@ void AudioPolicyManager::checkOutputForStrategy(const product_strategy_t psId)
                 if (desc->isDuplicated() || !desc->mProfile->isDirectOutput()) {
                     // a client on a non direct outputs has necessarily a linear PCM format
                     // so we can call selectOutput() safely
-                    const audio_io_handle_t newOutput = selectOutput(dstOutputs,
-                                                                     client->flags(),
-                                                                     client->config().format,
-                                                                     client->config().channel_mask,
-                                                                     client->config().sample_rate,
-                                                                     client->session());
+                    const audio_io_handle_t newOutput = selectOutput(dstOutputs, client->flags(),
+                            client->config().format, client->config().channel_mask,
+                            client->config().sample_rate, client->session(),
+                            client->attributes().usage, speakerOnly);
                     if (newOutput != srcOut) {
                         invalidate = true;
                         break;

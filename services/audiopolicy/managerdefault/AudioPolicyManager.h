@@ -919,7 +919,9 @@ protected:
                                        audio_format_t format = AUDIO_FORMAT_INVALID,
                                        audio_channel_mask_t channelMask = AUDIO_CHANNEL_NONE,
                                        uint32_t samplingRate = 0,
-                                       audio_session_t sessionId = AUDIO_SESSION_NONE);
+                                       audio_session_t sessionId = AUDIO_SESSION_NONE,
+                                       audio_usage_t usage = AUDIO_USAGE_UNKNOWN,
+                                       bool speakerOnly = false);
         // samplingRate, format, channelMask are in/out and so may be modified
         sp<IOProfile> getInputProfile(const sp<DeviceDescriptor> & device,
                                       uint32_t& samplingRate,
